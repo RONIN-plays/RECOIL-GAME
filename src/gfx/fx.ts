@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { DEPTH, FONT, GH, GW } from '../config';
+import { DEPTH, FONT, GH, GW, TOUCH_WORLD_TEXT } from '../config';
 import { audio } from '../core/audio';
+import { isTouch } from '../core/device';
 import { TAU, clamp, lerp } from '../core/math';
 import { rnd, rndPick } from '../core/rng';
 import { loadSave } from '../core/save';
@@ -267,6 +268,7 @@ export class Fx {
     t.active = true;
     t.life = t.max = life;
     t.vy = -70;
+    if (isTouch()) size = Math.round(size * TOUCH_WORLD_TEXT);
     t.txt.setText(str).setFontSize(size).setColor(color).setPosition(x + rnd(-8, 8), y).setAlpha(1).setScale(1.5).setVisible(true);
   }
 

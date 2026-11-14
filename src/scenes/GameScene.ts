@@ -1,8 +1,9 @@
 import Phaser from 'phaser';
-import { DEPTH, GH, GW, THEMES, TILE, type Theme } from '../config';
+import { DEPTH, GH, GW, THEMES, TILE, TOUCH_BOSS_ZOOM, TOUCH_ZOOM, type Theme, ZOOM } from '../config';
 import { audio } from '../core/audio';
 import { Bot } from '../core/bot';
-import { TAU, clamp, damp } from '../core/math';
+import { isTouch } from '../core/device';
+import { TAU, angDiff, clamp, damp } from '../core/math';
 import { RNG, rnd, rndInt } from '../core/rng';
 import { loadSave, writeSave } from '../core/save';
 import { BOSSES } from '../entities/boss';
@@ -56,8 +57,34 @@ export interface StartData {
   room?: string;
 }
 
-/** Camera zoom: the view shows 24 x 13.5 tiles. */
-const ZOOM = 1.25;
+/** How quickly the camera eases between zoom levels (touch: into and out of a boss fight). */
+const ZOOM_EASE = 2.5;
+/** Touch aim: how far ahead of the player the aim point sits (world px). Drives the camera lean. */
+export const TOUCH_AIM_LEAD = 520;
+/** Touch aim assist: half-angle of the cone around the stick direction that can snap onto an enemy (radians). */
+export const AIM_ASSIST_CONE = 0.2;
+/** Touch aim assist: enemies further than this (world px) are ignored. */
+export const AIM_ASSIST_RANGE = 950;
+/** Touch aim assist: fraction of the angle to the chosen enemy that is applied (0 = off, 1 = hard lock). */
+export const AIM_ASSIST_STRENGTH = 0.6;
+
+/** Written by the on-screen touch controls in UIScene, read by readInput() in touch mode. */
+export interface TouchState {
+  /** Analog move vector from the move stick, length 0..1. */
+  mx: number;
+  my: number;
+  /** Raw aim-stick direction (radians), valid while `aiming`. */
+  aimAng: number;
+  /** The aim stick is held past its dead zone. */
+  aiming: boolean;
+  /** The aim stick is held past the fire threshold. */
+  fire: boolean;
+}
+
+export type TouchAction = 'roll' | 'reload' | 'blank' | 'interact' | 'pause' | 'cycle';
+const TOUCH_KEYS: Record<Exclude<TouchAction, 'cycle'>, string> = {
+  roll: 'space', reload: 'r', blank: 'q', interact: 'e', pause: 'esc',
+};
 
 interface Timer {
   t: number;
@@ -89,6 +116,9 @@ export class GameScene extends Phaser.Scene {
   bot: Bot | null = null;
   speed = 1;
   introT = 0;
+  touch: TouchState = { mx: 0, my: 0, aimAng: 0, aiming: false, fire: false };
+  /** Aim direction in touch mode after aim assist; persists when the stick is released. */
+  touchAim = 0;
 
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private wheel = 0;
@@ -144,6 +174,8 @@ export class GameScene extends Phaser.Scene {
     this.focus = null;
     this.introT = 0;
     this.speed = d.speed ?? 1;
+    this.touch = { mx: 0, my: 0, aimAng: 0, aiming: false, fire: false };
+    this.touchAim = -Math.PI / 2;
 
     const kb = this.input.keyboard!;
     this.keys = kb.addKeys({
@@ -201,8 +233,11 @@ export class GameScene extends Phaser.Scene {
 
     audio.startMusic();
     this.game.events.on('blur', this.onBlur, this);
+    // phone locked or app switched
+    this.game.events.on(Phaser.Core.Events.HIDDEN, this.onBlur, this);
     this.events.once('shutdown', () => {
       this.game.events.off('blur', this.onBlur, this);
+      this.game.events.off(Phaser.Core.Events.HIDDEN, this.onBlur, this);
       this.input.off('wheel');
       this.input.off('pointerdown');
       for (const key of Object.values(this.keys)) key.off('down');
@@ -213,6 +248,18 @@ export class GameScene extends Phaser.Scene {
 
   private onBlur(): void {
     if (!this.run.over && !this.modal && !this.bot) this.events.emit('pause', true);
+  }
+
+  /** Target camera zoom for the current input mode; touch pulls back for boss fights. */
+  get zoom(): number {
+    if (!isTouch()) return ZOOM;
+    return this.bossEnemy ? TOUCH_BOSS_ZOOM : TOUCH_ZOOM;
+  }
+
+  /** An on-screen touch button was pressed: latched like a key press, so a quick tap is never lost. */
+  touchPress(a: TouchAction): void {
+    if (a === 'cycle') this.wheel += 1;
+    else this.pressed.add(TOUCH_KEYS[a]);
   }
 
   /** Run a callback after a delay measured in real (unscaled) seconds. */
@@ -683,14 +730,33 @@ export class GameScene extends Phaser.Scene {
     const ptr = this.input.activePointer;
     c.mx = (k.d.isDown || k.right.isDown ? 1 : 0) - (k.a.isDown || k.left.isDown ? 1 : 0);
     c.my = (k.s.isDown || k.down.isDown ? 1 : 0) - (k.w.isDown || k.up.isDown ? 1 : 0);
-    const wp = this.cameras.main.getWorldPoint(ptr.x, ptr.y);
-    c.aimX = wp.x;
-    c.aimY = wp.y;
-    const tapped = this.take('lmb');
-    c.fire = ptr.leftButtonDown() || tapped;
-    if (this.fireLock) {
-      if (!ptr.leftButtonDown()) this.fireLock = false;
-      c.fire = false;
+    if (isTouch()) {
+      // twin-stick: UIScene writes this.touch; pointer buttons mean nothing here
+      const t = this.touch;
+      if (t.mx !== 0 || t.my !== 0) {
+        c.mx = t.mx;
+        c.my = t.my;
+      }
+      this.take('lmb');
+      if (t.aiming) this.touchAim = this.assistAim(t.aimAng);
+      const p = this.player;
+      c.aimX = p.x + Math.cos(this.touchAim) * TOUCH_AIM_LEAD;
+      c.aimY = p.y + Math.sin(this.touchAim) * TOUCH_AIM_LEAD;
+      c.fire = t.fire;
+      if (this.fireLock) {
+        if (!t.fire) this.fireLock = false;
+        c.fire = false;
+      }
+    } else {
+      const wp = this.cameras.main.getWorldPoint(ptr.x, ptr.y);
+      c.aimX = wp.x;
+      c.aimY = wp.y;
+      const tapped = this.take('lmb');
+      c.fire = ptr.leftButtonDown() || tapped;
+      if (this.fireLock) {
+        if (!ptr.leftButtonDown()) this.fireLock = false;
+        c.fire = false;
+      }
     }
     const space = this.take('space');
     const shift = this.take('shift');
@@ -705,6 +771,30 @@ export class GameScene extends Phaser.Scene {
     c.cycle = this.wheel > 0 ? 1 : this.wheel < 0 ? -1 : 0;
     this.wheel = 0;
     this.pressed.clear();
+  }
+
+  /** Light aim assist: nudge the stick direction toward a visible enemy inside a narrow cone. */
+  private assistAim(a: number): number {
+    const p = this.player;
+    let best = 0;
+    let bestScore = Infinity;
+    for (const e of this.enemies.list) {
+      if (e.dead || e.spawnT > 0 || !e.hasLos) continue;
+      const dx = e.x - p.x;
+      const dy = e.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d > AIM_ASSIST_RANGE || d < 1) continue;
+      const da = angDiff(a, Math.atan2(dy, dx));
+      // allow a little extra cone for big targets up close
+      const cone = AIM_ASSIST_CONE + Math.atan2(e.r, d) * 0.5;
+      if (Math.abs(da) > cone) continue;
+      const score = Math.abs(da) / cone + d / AIM_ASSIST_RANGE * 0.5;
+      if (score < bestScore) {
+        bestScore = score;
+        best = da;
+      }
+    }
+    return a + best * AIM_ASSIST_STRENGTH;
   }
 
   private clearEdges(): void {
@@ -862,10 +952,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private snapCamera(): void {
+    // snap to the mode's base zoom; present() then eases into a boss fight's wider view
+    this.cameras.main.setZoom(isTouch() ? TOUCH_ZOOM : ZOOM);
     const t = this.cameraTarget();
     this.camX = t.x;
     this.camY = t.y;
-    this.cameras.main.setZoom(ZOOM);
     this.cameras.main.setScroll(this.camX - GW / 2, this.camY - GH / 2);
   }
 
@@ -895,13 +986,17 @@ export class GameScene extends Phaser.Scene {
       if (size + margin * 2 <= view) return size / 2 + clamp((t - size / 2) * 0.12, -40, 40);
       return clamp(t, view / 2 - margin, size - view / 2 + margin);
     };
-    return { x: axis(tx, room.pw, GW / ZOOM), y: axis(ty, room.ph, GH / ZOOM) };
+    // clamp against the zoom on screen right now, so the view stays inside the room while it eases
+    const zoom = this.cameras.main.zoom;
+    return { x: axis(tx, room.pw, GW / zoom), y: axis(ty, room.ph, GH / zoom) };
   }
 
   /** Camera, lights and other per-rendered-frame work. */
   private present(dtReal: number, time: number): void {
     if (!this.room) return;
     const cam = this.cameras.main;
+    const zt = this.zoom;
+    if (cam.zoom !== zt) cam.setZoom(Math.abs(cam.zoom - zt) < 0.002 ? zt : damp(cam.zoom, zt, ZOOM_EASE, dtReal));
     const t = this.cameraTarget();
     const rate = this.focus ? 3.5 : 9;
     this.camX = damp(this.camX, t.x, rate, dtReal);

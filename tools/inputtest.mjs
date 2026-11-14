@@ -174,6 +174,44 @@ await page.mouse.down();
 await page.waitForTimeout(120);
 await page.screenshot({ path: 'tools/shots/in_shotgun.png' });
 await page.mouse.up();
+await page.waitForTimeout(400);
+
+// --- point-blank: an enemy standing right on top of the player still gets hit
+for (const [key, gun] of [['1', 'pistol'], ['2', 'shotgun']]) {
+  await page.keyboard.press(key);
+  await page.evaluate(() => {
+    const s = window.__recoil;
+    const p = s.player;
+    p.god = true;
+    p.reloading = false;
+    p.weapon.clip = p.clipSize();
+    const e = s.enemies.spawn('charger', p.x, p.y);
+    e.hp = e.maxHp = 5000;
+    window.__pb = e;
+  });
+  await page.waitForTimeout(400); // 0.3 s spawn-in
+  const hp0 = await page.evaluate(() => {
+    const e = window.__pb;
+    e.stun = 5; // hold it in place on the player
+    e.x = window.__recoil.player.x;
+    e.y = window.__recoil.player.y;
+    return e.hp;
+  });
+  await page.mouse.move(1400, 300);
+  await page.mouse.down(); await page.mouse.up();
+  await page.waitForTimeout(250);
+  const r = await page.evaluate(() => {
+    const s = window.__recoil;
+    const e = window.__pb;
+    const out = { hp: e.hp, weapon: s.player.weapon.def.id, d: Math.hypot(e.x - s.player.x, e.y - s.player.y) };
+    s.enemies.kill(e);
+    s.player.god = false;
+    return out;
+  });
+  check(`point-blank ${gun} shot hits an enemy on top of the player`, r.weapon === gun && r.hp < hp0,
+    `dmg=${Math.round(hp0 - r.hp)} dist=${Math.round(r.d)}`);
+  await page.waitForTimeout(300);
+}
 
 // --- walk through a door into the next room
 const dir = await page.evaluate(() => Object.keys(window.__recoil.room.node.doors)[0]);

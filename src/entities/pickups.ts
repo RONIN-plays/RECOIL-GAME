@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { DEPTH, FONT } from '../config';
 import { audio } from '../core/audio';
+import { isTouch } from '../core/device';
 import { TAU } from '../core/math';
 import { rnd } from '../core/rng';
 import type { GameScene } from '../scenes/GameScene';
@@ -96,7 +97,7 @@ export class Pickups {
     if (kind === 'weapon' || (kind === 'shop' && data.item === 'weapon')) img.setScale(0.5).setRotation(-0.35);
     if (kind === 'upgrade' || (kind === 'shop' && data.item === 'upgrade')) img.setScale(0.8);
     if (kind === 'shop') {
-      label = s.add.text(x, y + 58, String(data.price ?? 0), { fontFamily: FONT, fontSize: '24px', fontStyle: '700', color: '#f3cf62' })
+      label = s.add.text(x, y + 58, String(data.price ?? 0), { fontFamily: FONT, fontSize: isTouch() ? '32px' : '24px', fontStyle: '700', color: '#f3cf62' })
         .setOrigin(0.5).setDepth(DEPTH.WTEXT).setStroke('#17120f', 5);
     }
     const a = rnd(0, TAU);

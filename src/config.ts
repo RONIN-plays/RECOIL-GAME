@@ -4,6 +4,15 @@ export const TILE = 64;
 
 export const FONT = 'Oswald, "Arial Narrow", Impact, sans-serif';
 
+/** Camera zoom on desktop: the view shows 24 x 13.5 tiles. */
+export const ZOOM = 1.25;
+/** Camera zoom in touch mode: closer, so characters and bullets read on a phone (15 x 8.4 tiles). */
+export const TOUCH_ZOOM = 1.6;
+/** Camera zoom in touch mode during a boss fight: wide enough to keep the boss on screen from across the arena. */
+export const TOUCH_BOSS_ZOOM = 1.3;
+/** Floating world text (damage numbers, PERFECT, +AMMO...) is drawn this much larger in touch mode. */
+export const TOUCH_WORLD_TEXT = 1.35;
+
 /** Render order, low to high. */
 export const DEPTH = {
   FLOOR: 0,

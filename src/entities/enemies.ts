@@ -72,6 +72,8 @@ const TEX: Record<EnemyType, string> = {
 const MUZZLE: Record<EnemyType, number> = {
   grunt: 36, shotgunner: 40, swarmer: 0, charger: 0, sniper: 66, grenadier: 38, turret: 40, heavy: 48, drone: 26,
 };
+/** A charger with line of sight stops this far (centre to centre, px) from the player and backs off if closer. */
+const CHARGER_HOLD = 100;
 /** Machines leave oil, not blood. */
 const MACHINE = new Set<string>(['turret', 'drone']);
 
@@ -666,7 +668,10 @@ export class Enemies {
         const line = e.aux!;
         if (e.state === 'move') {
           this.face(e, dt, 5);
-          this.approach(e, e.speed, dt);
+          // close in, but hold off a short way when it can see the player, so it charges from range
+          // instead of standing on them (in a corner the dash would hit the wall at once, every time)
+          if (!e.hasLos || d > CHARGER_HOLD) this.approach(e, e.speed, dt);
+          else if (d < CHARGER_HOLD * 0.8) this.move(e, -dx / d, -dy / d, e.speed * 0.6, dt);
           line.setVisible(false);
           if (e.cd <= 0 && e.hasLos && d < 460) {
             e.state = 'windup';

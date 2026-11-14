@@ -28,6 +28,9 @@ export const emptyControls = (): Controls => ({
 });
 
 const ROLL_DUR = 0.4;
+/** Point-blank shots start this far (px) before the barrel line's closest point to the enemy, so the
+ * bullet's first collision sub-step (at most 14 px) lands inside the enemy's circle. */
+const POINT_BLANK_BACK = 8;
 const ROLL_SPEED = 720;
 const ROLL_IFRAMES = 0.34;
 const MAX_WEAPONS = 4;
@@ -324,6 +327,26 @@ export class Player {
       mx = this.x + ca * 8;
       my = this.y + sa * 8;
     }
+    // the flash stays at the barrel; only the bullets may start further back
+    const flashX = mx;
+    const flashY = my;
+    // an enemy pressed against the player is already past the muzzle: start the bullets just short of
+    // the closest point of the barrel line to it, so a point-blank shot connects
+    const reach = Math.hypot(mx - this.x, my - this.y);
+    let startT = reach;
+    for (const e of s.enemies.list) {
+      if (e.dead || e.spawnT > 0) continue;
+      const ex = e.x - this.x;
+      const ey = e.y - this.y;
+      const t = clamp(ex * ca + ey * sa, 0, reach);
+      const dx = ex - ca * t;
+      const dy = ey - sa * t;
+      if (dx * dx + dy * dy <= e.r * e.r) startT = Math.min(startT, t - POINT_BLANK_BACK);
+    }
+    if (startT < reach) {
+      mx = this.x + ca * startT;
+      my = this.y + sa * startT;
+    }
 
     let dmgMul = stats.dmg;
     if (w.perfect) dmgMul *= 1.25;
@@ -349,7 +372,7 @@ export class Player {
     this.kx -= ca * def.kick * stats.kick;
     this.ky -= sa * def.kick * stats.kick;
     this.gunKick = 1;
-    s.fx.muzzle(mx, my, this.aim, 0.55 + def.shake * 1.6);
+    s.fx.muzzle(flashX, flashY, this.aim, 0.55 + def.shake * 1.6);
     if (def.shell) s.fx.shell(this.x + ca * 16, this.y + sa * 16, this.aim, def.shell);
     s.fx.shake(def.shake * 0.8);
     s.fx.kick(this.aim + Math.PI, 5 + def.shake * 34);
